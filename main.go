@@ -9,15 +9,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	APIKey string
-	StopID string
-	Port   string
+	APIKey         string
+	StopID         string
+	Port           string
+	AllowedOrigins []string
 }
 
 func main() {
@@ -27,10 +30,21 @@ func main() {
 		slog.Error("Error loading .env file")
 	}
 
+	allowedOriginsRaw := os.Getenv("ALLOWED_ORIGINS")
+	var allowedOrigins []string
+	if allowedOriginsRaw != "" {
+		for _, o := range strings.Split(allowedOriginsRaw, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+	}
+
 	config := Config{
-		APIKey: os.Getenv("RMV_API_KEY"),
-		StopID: os.Getenv("STOP_ID"),
-		Port:   os.Getenv("PORT"),
+		APIKey:         os.Getenv("RMV_API_KEY"),
+		StopID:         os.Getenv("STOP_ID"),
+		Port:           os.Getenv("PORT"),
+		AllowedOrigins: allowedOrigins,
 	}
 
 	if config.Port == "" {
@@ -70,10 +84,29 @@ func main() {
 
 	addr := ":" + config.Port
 	slog.Info("Starting server", "addr", addr, "stopId", config.StopID)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	handler := corsMiddleware(mux, config.AllowedOrigins)
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && (slices.Contains(allowedOrigins, origin) || slices.Contains(allowedOrigins, "*")) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func fetchDepartures(ctx context.Context, apiKey, stopID string) (any, error) {
@@ -86,6 +119,7 @@ func fetchDepartures(ctx context.Context, apiKey, stopID string) (any, error) {
 	q.Set("accessId", apiKey)
 	q.Set("id", stopID)
 	q.Set("format", "json")
+	q.Set("duration", "120")
 	u.RawQuery = q.Encode()
 
 	client := &http.Client{
