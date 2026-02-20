@@ -119,7 +119,7 @@ func fetchDepartures(ctx context.Context, apiKey, stopID string) (any, error) {
 	q.Set("accessId", apiKey)
 	q.Set("id", stopID)
 	q.Set("format", "json")
-	q.Set("duration", "120")
+	q.Set("duration", "60")
 	u.RawQuery = q.Encode()
 
 	client := &http.Client{
