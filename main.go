@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -21,6 +22,41 @@ type Config struct {
 	StopID         string
 	Port           string
 	AllowedOrigins []string
+}
+
+type cacheEntry struct {
+	data      any
+	expiresAt time.Time
+}
+
+type Cache struct {
+	mu      sync.RWMutex
+	entries map[string]cacheEntry
+}
+
+func NewCache() *Cache {
+	return &Cache{
+		entries: make(map[string]cacheEntry),
+	}
+}
+
+func (c *Cache) Get(key string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.entries[key]
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.data, true
+}
+
+func (c *Cache) Set(key string, data any, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = cacheEntry{
+		data:      data,
+		expiresAt: time.Now().Add(ttl),
+	}
 }
 
 func main() {
@@ -61,10 +97,11 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	cache := NewCache()
 
 	// Handler for next departures
 	mux.HandleFunc("GET /next-departures", func(w http.ResponseWriter, r *http.Request) {
-		departures, err := fetchDepartures(r.Context(), config.APIKey, config.StopID)
+		departures, err := fetchDepartures(r.Context(), cache, config.APIKey, config.StopID)
 		if err != nil {
 			slog.Error("failed to fetch departures", "error", err)
 			http.Error(w, "Failed to fetch departures", http.StatusInternalServerError)
@@ -109,7 +146,13 @@ func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 	})
 }
 
-func fetchDepartures(ctx context.Context, apiKey, stopID string) (any, error) {
+func fetchDepartures(ctx context.Context, cache *Cache, apiKey, stopID string) (any, error) {
+	cacheKey := stopID
+	if data, ok := cache.Get(cacheKey); ok {
+		slog.Info("cache hit", "stopId", stopID)
+		return data, nil
+	}
+
 	u, err := url.Parse("https://www.rmv.de/hapi/departureBoard")
 	if err != nil {
 		return nil, err
@@ -150,6 +193,9 @@ func fetchDepartures(ctx context.Context, apiKey, stopID string) (any, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
+
+	cache.Set(cacheKey, data, 5*time.Minute)
+	slog.Info("fetched new data", "stopId", stopID)
 
 	return data, nil
 }
