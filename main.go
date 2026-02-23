@@ -61,10 +61,7 @@ func (c *Cache) Set(key string, data any, ttl time.Duration) {
 
 func main() {
 
-	err := godotenv.Load()
-	if err != nil {
-		slog.Error("Error loading .env file")
-	}
+	_ = godotenv.Load()
 
 	allowedOriginsRaw := os.Getenv("ALLOWED_ORIGINS")
 	var allowedOrigins []string
